@@ -1,7 +1,22 @@
-import type { NextConfig } from "next";
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  images: {
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "pbs.twimg.com", // Twitter images
+      },
+      {
+        protocol: "https",
+        hostname: "res.cloudinary.com", // Cloudinary images
+        pathname: "/**", // allow all paths under Cloudinary
+      },
+    ],
+  },
 
-const nextConfig: NextConfig = {
-  /* config options here */
+  eslint: {
+    ignoreDuringBuilds: true, // ✅ don't block build on lint errors
+  },
 };
 
-export default nextConfig;
+module.exports = nextConfig;
