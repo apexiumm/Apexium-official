@@ -2,7 +2,7 @@ import "./globals.css";
 import Providers from "@/components/Provider";
 
 export const metadata = {
-  title: "Apexium InfoFi",
+  title: "Apex Drill",
   description: "Turn conversations into campaigns with Apexium InfoFi",
 };
 
