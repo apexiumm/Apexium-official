@@ -122,6 +122,6 @@ export async function startCampaignStream(campaignId: string) {
   await fetchAndUpdateLeaderboard();
 
   // Intervals
-  setInterval(fetchAndUpdateLeaderboard, 2 * 60 * 60 * 1000); // every 2h
-  setInterval(refreshRegisteredUsers, 2 * 60 * 60 * 1000); // every 1h
+  setInterval(fetchAndUpdateLeaderboard,  2 * 60 * 60 * 1000); // every 2h
+  setInterval(refreshRegisteredUsers,  2 * 60 * 60 * 1000); // every 1h
 }
