@@ -75,6 +75,8 @@ export async function startCampaignStream(campaignId: string) {
 
       // Build leaderboard
       const leaderboardMap: Record<string, { author_id: string; username: string; avatar: string; score: number }> = {};
+let processedTweets = 0;
+const skippedUnregistered = 0;
 
       for (const tweet of allTweets) {
         const authorId = tweet.author_id;
@@ -82,7 +84,10 @@ export async function startCampaignStream(campaignId: string) {
         if (!authorId || !metrics) continue;
 
         const regUser = registeredUserMap.get(authorId);
-        if (!regUser) continue;
+        if (!regUser) {
+          console.log(`tweet from unregistered user: ${authorId}`);
+          
+          continue} ;
 
         const userData = allUsers.find((u) => u.id === authorId);
         const followersCount = userData?.public_metrics?.followers_count || 0;
@@ -97,7 +102,14 @@ export async function startCampaignStream(campaignId: string) {
           avatar: regUser.avatar || userData?.profile_image_url || "/avatar1.png",
           score,
         };
+        processedTweets++;
+        console.log(`processed tweet by registered user ${authorId}, score: ${score}`);
+        
       }
+      console.log(`total tweets processed: ${processedTweets}`);
+      console.log(`total tweets skipped (unregistered users): ${skippedUnregistered}`);
+      
+      
 
       const leaderboard = Object.values(leaderboardMap).sort((a, b) => b.score - a.score);
 
