@@ -27,109 +27,73 @@ export async function startCampaignStream(campaignId: string) {
 
   const twitterClient = new TwitterApi(bearerToken);
 
-  let registeredUserMap = new Map<string, { username: string; avatar: string }>();
+  const users = await User.find({}, "twitterId username avatar");
+  const registeredUserMap = new Map(users.map(u => [u.twitterId, { username: u.username, avatar: u.avatar }]));
 
-  const refreshRegisteredUsers = async () => {
-    const users = await User.find({}, "twitterId username avatar");
-    registeredUserMap = new Map(
-      users.map((u) => [u.twitterId, { username: u.username, avatar: u.avatar }])
-    );
-    console.log(`🔄 Refreshed users: ${registeredUserMap.size} total`);
-  };
+  try {
+    console.log(`🔍 Searching Twitter for campaign ${campaignId}...`);
 
-  await refreshRegisteredUsers();
+    const paginator = await twitterClient.v2.search(keywordsQuery, {
+      "tweet.fields": ["public_metrics", "author_id", "text", "created_at"],
+      expansions: ["author_id", "referenced_tweets.id"],
+      "user.fields": ["username", "profile_image_url", "public_metrics"],
+      max_results: 100,
+    });
 
-  const fetchAndUpdateLeaderboard = async () => {
-    try {
+    console.log("📄 Twitter search returned, fetching pages...");
 
-       console.log(`🔍 Searching Twitter for campaign ${campaignId}...`);
+    const allTweets: TweetV2[] = [];
+    const allUsers: { id: string; username: string; profile_image_url?: string; public_metrics?: any }[] = [];
 
-      const paginator = await twitterClient.v2.search(keywordsQuery, {
-        "tweet.fields": ["public_metrics", "author_id", "text", "created_at"],
-        expansions: ["author_id", "referenced_tweets.id"],
-        "user.fields": ["username", "profile_image_url", "public_metrics"],
-        max_results: 100,
-      });
+    let pageCount = 0;
+    do {
+      const realData = (paginator as any)._realData;
+      allTweets.push(...(realData?.data || []));
+      allUsers.push(...(realData?.includes?.users || []));
+      pageCount++;
+      console.log(`📄 Page ${pageCount} fetched, tweets so far: ${allTweets.length}`);
+      if (pageCount >= 5) break;
+    } while (await paginator.fetchNext());
 
-      console.log("📄 Twitter search returned, fetching pages...");
+    
+console.log(`✅ Total tweets fetched: ${allTweets.length}, users: ${allUsers.length}`);
 
-      const allTweets: TweetV2[] = [];
-      const allUsers: {
-        id: string;
-        username: string;
-        profile_image_url?: string;
-        public_metrics?: any;
-      }[] = [];
 
-      let pageCount = 0;
-      do {
-        const realData = (paginator as any)._realData;
-        allTweets.push(...(realData?.data || []));
-        allUsers.push(...(realData?.includes?.users || []));
-        pageCount++;
-          console.log(`📄 Page ${pageCount} fetched, tweets so far: ${allTweets.length}`);
-        if (pageCount >= 5) break;
-      } while (await paginator.fetchNext());
+    const leaderboardMap: Record<string, { author_id: string; username: string; avatar: string; score: number }> = {};
 
-       console.log(`✅ Total tweets fetched: ${allTweets.length}, users: ${allUsers.length}`);
+    for (const tweet of allTweets) {
+      const authorId = tweet.author_id;
+      if (!authorId || !tweet.public_metrics) continue;
 
-      const leaderboardMap: Record<
-        string,
-        { author_id: string; username: string; avatar: string; score: number }
-      > = {};
+      const regUser = registeredUserMap.get(authorId);
+      if (!regUser) continue;
 
-      for (const tweet of allTweets) {
-        const authorId = tweet.author_id;
-        const metrics = tweet.public_metrics;
-        if (!authorId || !metrics) continue;
+      const userData = allUsers.find(u => u.id === authorId);
+      const followersCount = userData?.public_metrics?.followers_count || 0;
 
-        const regUser = registeredUserMap.get(authorId);
-        if (!regUser) continue;
-
-        const userData = allUsers.find((u) => u.id === authorId);
-
-        // ✅ Use new scoring
-        const followersCount = userData?.public_metrics?.followers_count || 0;
-        const score = scoreCreatorPost(
-          {
-            id: tweet.id!,
-            text: tweet.text,
-            created_at: tweet.created_at,
-            public_metrics: tweet.public_metrics,
-          },
-          followersCount
-        );
-
-        leaderboardMap[authorId] = {
-          author_id: authorId,
-          username: regUser.username || userData?.username || "Unknown",
-          avatar: regUser.avatar || userData?.profile_image_url || "/avatar1.png",
-          score,
-        };
-      }
-
-      const leaderboard = Object.values(leaderboardMap).sort(
-        (a, b) => b.score - a.score
+      const score = scoreCreatorPost(
+        { id: tweet.id!, text: tweet.text, created_at: tweet.created_at, public_metrics: tweet.public_metrics },
+        followersCount
       );
 
-      await Leaderboard.updateOne(
-        { campaignId: new mongoose.Types.ObjectId(campaignId) },
-        { $set: { data: leaderboard, updatedAt: new Date() } },
-        { upsert: true }
-      );
-
-      console.log(
-        `✅ Leaderboard updated for ${campaignId}, entries: ${leaderboard.length}`
-      );
-    } catch (err) {
-      console.error(`Error fetching leaderboard for ${campaignId}:`, err);
+      leaderboardMap[authorId] = {
+        author_id: authorId,
+        username: regUser.username || userData?.username || "Unknown",
+        avatar: regUser.avatar || userData?.profile_image_url || "/avatar1.png",
+        score,
+      };
     }
-  };
 
-  // Run once immediately
-  await fetchAndUpdateLeaderboard();
+    const leaderboard = Object.values(leaderboardMap).sort((a, b) => b.score - a.score);
 
-  // Intervals
-  setInterval(fetchAndUpdateLeaderboard,  20 * 1000); // every 2h
-  setInterval(refreshRegisteredUsers,  20 * 1000); // every 1h
+    await Leaderboard.updateOne(
+      { campaignId: new mongoose.Types.ObjectId(campaignId) },
+      { $set: { data: leaderboard, updatedAt: new Date() } },
+      { upsert: true }
+    );
+
+    console.log(`✅ Leaderboard updated for ${campaignId}, entries: ${leaderboard.length}`);
+  } catch (err) {
+    console.error(`Error fetching leaderboard for ${campaignId}:`, err);
+  }
 }

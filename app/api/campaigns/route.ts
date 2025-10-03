@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { connectToDB } from "@/lib/mongodb";
 import { Campaign } from "@/models/Campaign";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/lib/auth"; // ✅ update path
+import { authOptions } from "@/lib/auth";
 import { ADMIN_USERS } from "@/config/admins";
 import cloudinary from "@/lib/cloudinary";
 import { startCampaignStream } from "@/lib/startCampaignStream";
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     status: "active"
   });
 
-  // Start background leaderboard updater
+  // Trigger leaderboard immediately
   await startCampaignStream(newCampaign._id.toString());
 
   return NextResponse.json(newCampaign);
@@ -87,8 +87,10 @@ export async function PATCH(req: Request) {
   const updated = await Campaign.findByIdAndUpdate(campaignId, { ...updateData, status }, { new: true });
   if (!updated) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
-  // Start leaderboard updater if campaign activated
-  if (status === "active") await startCampaignStream(campaignId);
+  // Trigger leaderboard if campaign is active
+  if (status === "active") {
+    await startCampaignStream(campaignId);
+  }
 
   return NextResponse.json(updated);
 }
