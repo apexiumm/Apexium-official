@@ -5,18 +5,19 @@ import { Campaign } from "@/models/Campaign";
 import { User } from "@/models/User";
 import { Leaderboard } from "@/models/Leaderboard";
 import { connectToDB } from "@/lib/mongodb";
+import { scoreCreatorPost } from "@/lib/apex-academia-scoring";
 
 export async function startCampaignStream(campaignId: string) {
   await connectToDB();
 
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) {
-    console.warn(`⚠ Campaign ${campaignId} not found`);
+    console.warn(`⚠️ Campaign ${campaignId} not found`);
     return;
   }
 
   if (!campaign.keywords || campaign.keywords.length === 0) {
-    console.warn(`⚠ Campaign ${campaignId} has no keywords`);
+    console.warn(`⚠️ Campaign ${campaignId} has no keywords`);
     return;
   }
 
@@ -30,7 +31,9 @@ export async function startCampaignStream(campaignId: string) {
 
   const refreshRegisteredUsers = async () => {
     const users = await User.find({}, "twitterId username avatar");
-    registeredUserMap = new Map(users.map(u => [u.twitterId, { username: u.username, avatar: u.avatar }]));
+    registeredUserMap = new Map(
+      users.map((u) => [u.twitterId, { username: u.username, avatar: u.avatar }])
+    );
     console.log(`🔄 Refreshed users: ${registeredUserMap.size} total`);
   };
 
@@ -38,6 +41,9 @@ export async function startCampaignStream(campaignId: string) {
 
   const fetchAndUpdateLeaderboard = async () => {
     try {
+
+       console.log(`🔍 Searching Twitter for campaign ${campaignId}...`);
+
       const paginator = await twitterClient.v2.search(keywordsQuery, {
         "tweet.fields": ["public_metrics", "author_id", "text", "created_at"],
         expansions: ["author_id", "referenced_tweets.id"],
@@ -45,8 +51,15 @@ export async function startCampaignStream(campaignId: string) {
         max_results: 100,
       });
 
+      console.log("📄 Twitter search returned, fetching pages...");
+
       const allTweets: TweetV2[] = [];
-      const allUsers: { id: string; username: string; profile_image_url?: string; public_metrics?: any }[] = [];
+      const allUsers: {
+        id: string;
+        username: string;
+        profile_image_url?: string;
+        public_metrics?: any;
+      }[] = [];
 
       let pageCount = 0;
       do {
@@ -54,10 +67,16 @@ export async function startCampaignStream(campaignId: string) {
         allTweets.push(...(realData?.data || []));
         allUsers.push(...(realData?.includes?.users || []));
         pageCount++;
+          console.log(`📄 Page ${pageCount} fetched, tweets so far: ${allTweets.length}`);
         if (pageCount >= 5) break;
       } while (await paginator.fetchNext());
 
-      const leaderboardMap: Record<string, { author_id: string; username: string; avatar: string; score: number }> = {};
+       console.log(`✅ Total tweets fetched: ${allTweets.length}, users: ${allUsers.length}`);
+
+      const leaderboardMap: Record<
+        string,
+        { author_id: string; username: string; avatar: string; score: number }
+      > = {};
 
       for (const tweet of allTweets) {
         const authorId = tweet.author_id;
@@ -67,37 +86,19 @@ export async function startCampaignStream(campaignId: string) {
         const regUser = registeredUserMap.get(authorId);
         if (!regUser) continue;
 
-        const userData = allUsers.find(u => u.id === authorId);
+        const userData = allUsers.find((u) => u.id === authorId);
 
-        const baseScore =
-          (metrics.like_count || 0) * 1 +
-          (metrics.retweet_count || 0) * 3 +
-          (metrics.reply_count || 0) * 4 +
-          (metrics.quote_count || 0) * 6;
-
-        let qualityMultiplier = 1.0;
-        if (tweet.text) {
-          const words = tweet.text.trim().split(/\s+/).length;
-          if (tweet.referenced_tweets?.some(r => r.type === "replied_to")) {
-            qualityMultiplier = words >= 12 ? 1.3 : words >= 6 ? 1.1 : 0.8;
-          } else if (tweet.referenced_tweets?.some(r => r.type === "quoted")) {
-            qualityMultiplier = words >= 8 ? 1.2 : 0.9;
-          }
-        }
-
-        let timingMultiplier = 1.0;
-        if (tweet.created_at) {
-          const ageMinutes = (Date.now() - new Date(tweet.created_at).getTime()) / (1000 * 60);
-          timingMultiplier = ageMinutes <= 60 ? 1.25 : ageMinutes <= 120 ? 1.1 : ageMinutes <= 48 * 60 ? 1.0 : 0.6;
-        }
-
-        let targetMultiplier = 1.0;
-        if (userData?.public_metrics?.followers_count !== undefined) {
-          const f = userData.public_metrics.followers_count;
-          targetMultiplier = f <= 1000 ? 0.9 : f <= 10000 ? 1.0 : f <= 100000 ? 1.1 : 1.2;
-        }
-
-        const score = baseScore * qualityMultiplier * timingMultiplier * targetMultiplier;
+        // ✅ Use new scoring
+        const followersCount = userData?.public_metrics?.followers_count || 0;
+        const score = scoreCreatorPost(
+          {
+            id: tweet.id!,
+            text: tweet.text,
+            created_at: tweet.created_at,
+            public_metrics: tweet.public_metrics,
+          },
+          followersCount
+        );
 
         leaderboardMap[authorId] = {
           author_id: authorId,
@@ -107,7 +108,9 @@ export async function startCampaignStream(campaignId: string) {
         };
       }
 
-      const leaderboard = Object.values(leaderboardMap).sort((a, b) => b.score - a.score);
+      const leaderboard = Object.values(leaderboardMap).sort(
+        (a, b) => b.score - a.score
+      );
 
       await Leaderboard.updateOne(
         { campaignId: new mongoose.Types.ObjectId(campaignId) },
@@ -115,7 +118,9 @@ export async function startCampaignStream(campaignId: string) {
         { upsert: true }
       );
 
-      console.log(`✅ Leaderboard updated for ${campaignId}, entries: ${leaderboard.length}`);
+      console.log(
+        `✅ Leaderboard updated for ${campaignId}, entries: ${leaderboard.length}`
+      );
     } catch (err) {
       console.error(`Error fetching leaderboard for ${campaignId}:`, err);
     }
@@ -125,6 +130,6 @@ export async function startCampaignStream(campaignId: string) {
   await fetchAndUpdateLeaderboard();
 
   // Intervals
-  setInterval(fetchAndUpdateLeaderboard, 2 * 60 * 60 * 1000); // every 2h
-  setInterval(refreshRegisteredUsers, 5 * 60 * 1000); // every 5min
+  setInterval(fetchAndUpdateLeaderboard,  20 * 1000); // every 2h
+  setInterval(refreshRegisteredUsers,  20 * 1000); // every 1h
 }
