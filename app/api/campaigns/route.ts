@@ -64,7 +64,7 @@ export async function POST(req: Request) {
   });
 
   // Start background leaderboard updater
-  startCampaignStream(newCampaign._id.toString());
+  await startCampaignStream(newCampaign._id.toString());
 
   return NextResponse.json(newCampaign);
 }
@@ -88,7 +88,7 @@ export async function PATCH(req: Request) {
   if (!updated) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
   // Start leaderboard updater if campaign activated
-  if (status === "active") startCampaignStream(campaignId);
+  if (status === "active") await startCampaignStream(campaignId);
 
   return NextResponse.json(updated);
 }
