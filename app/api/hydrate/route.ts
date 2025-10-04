@@ -1,6 +1,6 @@
 import { refreshTweetMetrics } from "@/lib/startCampaignStream";
 
-export const runtime = "nodejs20";
+export const runtime = "nodejs";
 
 export async function GET(req: Request) {
   const campaignId = process.env.CAMPAIGN_ID!;
