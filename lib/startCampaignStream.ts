@@ -11,15 +11,10 @@ export async function startCampaignStream(campaignId: string) {
   await connectToDB();
 
   const campaign = await Campaign.findById(campaignId);
-  if (!campaign) {
-    console.warn(`⚠️ Campaign ${campaignId} not found`);
-    return;
-  }
+  if (!campaign) return console.warn(`⚠️ Campaign ${campaignId} not found`);
 
-  if (!campaign.keywords || campaign.keywords.length === 0) {
-    console.warn(`⚠️ Campaign ${campaignId} has no keywords`);
-    return;
-  }
+  if (!campaign.keywords?.length)
+    return console.warn(`⚠️ Campaign ${campaignId} has no keywords`);
 
   const keywordsQuery = `(${campaign.keywords.join(" OR ")})`;
   const bearerToken = process.env.X_BEARER_TOKEN;
@@ -29,45 +24,39 @@ export async function startCampaignStream(campaignId: string) {
 
   // 🧩 Get all registered users
   const users = await User.find({}, "twitterId username avatar");
-  if (!users.length) {
-    console.warn("⚠️ No registered users found");
-    return;
-  }
+  if (!users.length) return console.warn("⚠️ No registered users found");
 
   const registeredUserMap = new Map(
     users.map((u) => [u.twitterId, { username: u.username, avatar: u.avatar }])
   );
 
   try {
-    console.log(
-      `🔍 Searching Twitter for campaign ${campaignId} with batching...`
-    );
+    console.log(`🔍 Searching Twitter for campaign ${campaignId} (safe batching)...`);
 
-    // 🧠 Adaptive batching setup
-    const maxQueryLength = 470;
+    const maxUsersPerBatch = 10; // safer: only 10–12 users per query
+    const maxQueryLength = 460;
+
     const batches: string[][] = [];
     let currentBatch: string[] = [];
     let currentLength = 0;
 
     for (const user of users) {
       const clause = `from:${user.username}`;
-      const addedLength = clause.length + 4;
-
-      if (currentLength + addedLength > maxQueryLength) {
+      const addedLength = clause.length + 5;
+      if (
+        currentBatch.length >= maxUsersPerBatch ||
+        currentLength + addedLength > maxQueryLength
+      ) {
         batches.push(currentBatch);
         currentBatch = [];
         currentLength = 0;
       }
-
       currentBatch.push(clause);
       currentLength += addedLength;
     }
-
     if (currentBatch.length) batches.push(currentBatch);
 
-    console.log(
-      `🧩 Total users: ${users.length}, total batches: ${batches.length}`
-    );
+    console.log(`🧩 Total users: ${users.length}, total batches: ${batches.length}`);
 
     const allTweets: TweetV2[] = [];
     const allUsers: {
@@ -77,12 +66,10 @@ export async function startCampaignStream(campaignId: string) {
       public_metrics?: any;
     }[] = [];
 
-    // 🔁 Process each batch independently
+    // 🔁 Fetch each batch
     for (let i = 0; i < batches.length; i++) {
       const fromQuery = `(${batches[i].join(" OR ")}) ${keywordsQuery}`;
-      console.log(
-        `🔎 Batch ${i + 1}/${batches.length}: ${fromQuery.length} chars`
-      );
+      console.log(`🔎 Batch ${i + 1}/${batches.length}: ${fromQuery.length} chars`);
 
       try {
         const paginator = await twitterClient.v2.search(fromQuery, {
@@ -95,33 +82,33 @@ export async function startCampaignStream(campaignId: string) {
         let pageCount = 0;
         do {
           const realData = (paginator as any)._realData;
-          allTweets.push(...(realData?.data || []));
-          allUsers.push(...(realData?.includes?.users || []));
+          const tweets = realData?.data || [];
+          const usersIncluded = realData?.includes?.users || [];
+
+          allTweets.push(...tweets);
+          allUsers.push(...usersIncluded);
+
           pageCount++;
           console.log(
-            `📄 Batch ${i + 1} → Page ${pageCount} fetched, total tweets: ${
-              allTweets.length
-            }`
+            `📄 Batch ${i + 1} → Page ${pageCount} fetched (total tweets so far: ${allTweets.length})`
           );
-          if (pageCount >= 5) break;
+
+          if (pageCount >= 5) break; // prevent abuse
         } while (await paginator.fetchNext());
       } catch (err) {
         if (err instanceof Error) {
-          console.warn(
-            `⚠️ Batch ${i + 1}/${batches.length} failed: ${err.message}`
-          );
+          console.warn(`⚠️ Batch ${i + 1}/${batches.length} failed: ${err.message}`);
         } else {
-          console.warn(
-            `⚠️ Batch ${i + 1}/${batches.length} failed with unknown error:`,
-            err
-          );
+          console.warn(`⚠️ Batch ${i + 1}/${batches.length} failed with unknown error:`, err);
         }
-        continue; // move to next batch
+        continue;
       }
     }
 
+    // 🔎 Post-filter only registered users
+    const filteredTweets = allTweets.filter((t) => registeredUserMap.has(t.author_id!));
     console.log(
-      `✅ Total tweets fetched: ${allTweets.length}, users: ${allUsers.length}`
+      `✅ Filtered tweets: ${filteredTweets.length} of ${allTweets.length} (only registered users)`
     );
 
     // 🧮 Ranking logic
@@ -130,7 +117,7 @@ export async function startCampaignStream(campaignId: string) {
       { author_id: string; username: string; avatar: string; score: number }
     > = {};
 
-    for (const tweet of allTweets) {
+    for (const tweet of filteredTweets) {
       const authorId = tweet.author_id;
       if (!authorId || !tweet.public_metrics) continue;
 
@@ -153,7 +140,6 @@ export async function startCampaignStream(campaignId: string) {
       console.log("Ranked tweet:", {
         tweetId: tweet.id,
         author: regUser.username,
-        text: tweet.text,
         score,
         likes: tweet.public_metrics.like_count,
         retweets: tweet.public_metrics.retweet_count,
@@ -164,8 +150,7 @@ export async function startCampaignStream(campaignId: string) {
         leaderboardMap[authorId] = {
           author_id: authorId,
           username: regUser.username || userData?.username || "Unknown",
-          avatar:
-            regUser.avatar || userData?.profile_image_url || "/avatar1.png",
+          avatar: regUser.avatar || userData?.profile_image_url || "/avatar1.png",
           score: 0,
         };
       }
@@ -173,9 +158,7 @@ export async function startCampaignStream(campaignId: string) {
       leaderboardMap[authorId].score += score;
     }
 
-    const leaderboard = Object.values(leaderboardMap).sort(
-      (a, b) => b.score - a.score
-    );
+    const leaderboard = Object.values(leaderboardMap).sort((a, b) => b.score - a.score);
 
     await Leaderboard.updateOne(
       { campaignId: new mongoose.Types.ObjectId(campaignId) },
@@ -183,13 +166,8 @@ export async function startCampaignStream(campaignId: string) {
       { upsert: true }
     );
 
-    console.log(
-      `✅ Leaderboard updated for ${campaignId}, entries: ${leaderboard.length}`
-    );
+    console.log(`✅ Leaderboard updated for ${campaignId}, entries: ${leaderboard.length}`);
   } catch (err) {
-    console.error(
-      `❌ Fatal error fetching leaderboard for ${campaignId}:`,
-      err
-    );
+    console.error(`❌ Fatal error fetching leaderboard for ${campaignId}:`, err);
   }
 }
