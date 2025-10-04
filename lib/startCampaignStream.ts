@@ -76,13 +76,28 @@ console.log(`✅ Total tweets fetched: ${allTweets.length}, users: ${allUsers.le
         followersCount
       );
 
-      leaderboardMap[authorId] = {
-        author_id: authorId,
-        username: regUser.username || userData?.username || "Unknown",
-        avatar: regUser.avatar || userData?.profile_image_url || "/avatar1.png",
+      console.log("Ranked tweet:", {
+        tweetId: tweet.id,
+        author: regUser.username,
+        text: tweet.text,
         score,
-      };
-    }
+        likes: tweet.public_metrics.like_count,
+        retweets: tweet.public_metrics.retweet_count,
+        replies: tweet.public_metrics.reply_count,
+      });
+      
+
+     if (!leaderboardMap[authorId]) {
+    leaderboardMap[authorId] = {
+      author_id: authorId,
+      username: regUser.username || userData?.username || "Unknown",
+      avatar: regUser.avatar || userData?.profile_image_url || "/avatar1.png",
+      score: 0,
+    };
+  }
+
+  leaderboardMap[authorId].score += score; // ✅ accumulate
+}
 
     const leaderboard = Object.values(leaderboardMap).sort((a, b) => b.score - a.score);
 
